@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Animagine Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@500;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-dot"></span>
+      <span class="brand-name">Animagine Studio</span>
+    </div>
+    <div class="topbar-right">
+      <button id="controlsToggle" class="icon-btn mobile-only" aria-label="Toggle controls">☰</button>
+      <button id="connectionStatus" class="status-pill status-unknown">
+        <span class="status-dot"></span>
+        <span class="status-label">Not connected</span>
+      </button>
+      <button id="settingsToggle" class="icon-btn" aria-label="Settings">⚙</button>
+    </div>
+  </header>
+
+  <div class="layout" id="layout">
+
+    <aside class="sidebar" id="sidebar">
+
+      <section class="panel">
+        <h2>Prompt</h2>
+        <label for="promptInput">Tags <span class="label-hint">(danbooru style, comma separated)</span></label>
+        <div class="tag-input-wrap">
+          <textarea id="promptInput" rows="5" placeholder="1girl, character name, solo, outdoors, looking at viewer..."></textarea>
+          <ul id="tagSuggestions" class="tag-suggestions hidden"></ul>
+        </div>
+        <div class="quick-tags" id="quickTags"></div>
+
+        <label for="negativeInput">Negative prompt</label>
+        <textarea id="negativeInput" rows="3"></textarea>
+      </section>
+
+      <section class="panel">
+        <h2>Output</h2>
+
+        <label for="numImages">Images per batch</label>
+        <div class="stepper">
+          <button type="button" class="stepper-btn" data-step="-1" aria-label="Decrease">–</button>
+          <input type="number" id="numImages" min="1" max="8" value="1" />
+          <button type="button" class="stepper-btn" data-step="1" aria-label="Increase">+</button>
+        </div>
+
+        <label for="resolutionPreset">Resolution</label>
+        <select id="resolutionPreset">
+          <option value="portrait">Portrait — 832 × 1216</option>
+          <option value="landscape">Landscape — 1216 × 832</option>
+          <option value="square">Square — 1024 × 1024</option>
+          <option value="tall">Tall — 896 × 1152</option>
+          <option value="wide">Wide — 1152 × 896</option>
+          <option value="custom">Custom…</option>
+        </select>
+        <div class="custom-res hidden" id="customRes">
+          <input type="number" id="customWidth" step="64" min="512" max="1536" value="832" aria-label="Width" />
+          <span class="x">×</span>
+          <input type="number" id="customHeight" step="64" min="512" max="1536" value="1216" aria-label="Height" />
+        </div>
+        <p class="hint" id="aspectHint">Aspect ratio 2:3</p>
+      </section>
+
+      <details class="panel advanced">
+        <summary>Advanced settings</summary>
+
+        <label for="cfgScale">Guidance scale (CFG) <span class="value-tag" id="cfgValue">5.0</span></label>
+        <input type="range" id="cfgScale" min="1" max="12" step="0.5" value="5" />
+
+        <label for="stepsRange">Steps <span class="value-tag" id="stepsValue">28</span></label>
+        <input type="range" id="stepsRange" min="10" max="50" step="1" value="28" />
+
+        <label for="seedInput">Seed <span class="label-hint">(-1 = random)</span></label>
+        <input type="number" id="seedInput" value="-1" />
+      </details>
+
+      <button id="generateBtn" class="generate-btn">
+        <span id="generateBtnLabel">Generate</span>
+      </button>
+      <p class="error-banner hidden" id="errorBanner"></p>
+    </aside>
+
+    <main class="gallery-area">
+      <div class="gallery-header">
+        <h1>Light table</h1>
+        <button id="downloadAllBtn" class="ghost-btn hidden">Download all (.zip)</button>
+      </div>
+      <div id="gallery" class="gallery"></div>
+      <div id="emptyState" class="empty-state">
+        <div class="empty-frame"></div>
+        <p>Your renders will appear here.</p>
+        <p class="empty-sub">Write some tags, set your Colab backend in settings, and press Generate.</p>
+      </div>
+    </main>
+
+  </div>
+</div>
+
+<div class="settings-panel hidden" id="settingsPanel">
+  <div class="settings-card">
+    <h2>Backend connection</h2>
+    <p class="hint">Paste the values printed at the bottom of your Colab cell.</p>
+
+    <label for="backendUrl">Colab backend URL</label>
+    <input type="text" id="backendUrl" placeholder="https://xxxx.ngrok-free.app" autocomplete="off" />
+
+    <label for="apiKey">API key</label>
+    <input type="text" id="apiKey" placeholder="printed in the Colab cell output" autocomplete="off" />
+
+    <button id="testConnectionBtn" class="ghost-btn">Test connection</button>
+    <p id="testResult" class="hint"></p>
+
+    <button id="closeSettings" class="generate-btn">Done</button>
+  </div>
+</div>
+
+<div class="lightbox hidden" id="lightbox">
+  <button class="lightbox-close" id="lightboxClose" aria-label="Close">✕</button>
+  <button class="lightbox-nav prev" id="lightboxPrev" aria-label="Previous">‹</button>
+  <img id="lightboxImage" src="" alt="Generated image" />
+  <button class="lightbox-nav next" id="lightboxNext" aria-label="Next">›</button>
+  <div class="lightbox-footer">
+    <div class="lightbox-meta" id="lightboxMeta"></div>
+    <button id="lightboxDownload" class="ghost-btn">Download</button>
+  </div>
+  <div class="filmstrip" id="filmstrip"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
