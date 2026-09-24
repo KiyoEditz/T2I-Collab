@@ -1,6 +1,7 @@
 # ==============================================================================
-# Animagine XL 4.0 — Render Server (for Google Colab)
-# Source model: https://huggingface.co/cagliostrolab/animagine-xl-4.0
+# SDXL Render Server (for Google Colab)
+# Default model: https://huggingface.co/cagliostrolab/animagine-xl-4.0
+# (swap MODEL_ID below for any SDXL-compatible checkpoint/finetune)
 #
 # This turns the Colab GPU into a render backend. It loads the model once,
 # exposes a small HTTP API (FastAPI), and tunnels that API to a public URL
@@ -14,10 +15,13 @@
 #   3. (Optional) Set API_KEY to a password of your choice. If left blank, a
 #      random one is generated for you and printed below — anyone who has
 #      your public ngrok URL AND this key can use your GPU, so keep it private.
-#   4. Run this whole file as a single Colab cell. It will keep running
+#   4. (Optional) Set MODEL_ID to a different SDXL checkpoint/finetune, and/or
+#      list LoRA styles under LORAS — see the comments on each below. The
+#      frontend will offer any configured LORAS as a style dropdown.
+#   5. Run this whole file as a single Colab cell. It will keep running
 #      (that's expected — it IS the server). Copy the printed "Backend URL"
 #      and "API Key" into the frontend app's settings panel.
-#   5. Leave this cell running for as long as you want to render images.
+#   6. Leave this cell running for as long as you want to render images.
 #      Stopping the cell (or the Colab session timing out) shuts the server down.
 # ==============================================================================
 
@@ -26,8 +30,39 @@ NGROK_AUTH_TOKEN = ""  # @param {type:"string"}   <- required, see step 2 above
 API_KEY = ""           # @param {type:"string"}   <- optional, leave blank to auto-generate
 PORT = 8000
 
+# Base checkpoint. Defaults to Animagine XL 4.0, but any SDXL-compatible
+# checkpoint works: a Hugging Face repo id ("author/model-name") or, if
+# you've uploaded your own finetune to the Colab filesystem/Drive, a local
+# path (e.g. "/content/drive/MyDrive/my-finetune").
+MODEL_ID = "cagliostrolab/animagine-xl-4.0"  # @param {type:"string"}
+
+# Optional LoRA styles/finetunes the frontend can offer in a dropdown selector.
+# Each entry is loaded once at startup and switched in per-request — no
+# reload needed to change styles. Leave the list empty to skip this entirely
+# (the frontend just won't show a style selector).
+#
+# "repo_id" can be a Hugging Face repo id or a local path; "weight_name" is
+# the specific .safetensors file inside it (omit/None if the repo only has
+# one weights file). "trigger_word" (optional) is automatically prepended to
+# the prompt whenever this style is selected. "default_scale" (0.0-2.0) is
+# the LoRA strength used unless the frontend requests a different one.
+#
+# Example:
+# LORAS = [
+#     {
+#         "id": "my_style",
+#         "name": "My Custom Style",
+#         "repo_id": "username/my-lora-repo",
+#         "weight_name": "my_style.safetensors",
+#         "trigger_word": "mystyle",
+#         "default_scale": 0.8,
+#     },
+# ]
+LORAS = []
+
 # --- 1. Install required libraries --------------------------------------------
-!pip install -q -U diffusers transformers accelerate safetensors
+# (peft is required for LoRA support — pipe.load_lora_weights()/set_adapters())
+!pip install -q -U diffusers transformers accelerate safetensors peft
 !pip install -q -U fastapi "uvicorn[standard]" pyngrok nest_asyncio python-multipart
 
 import base64
@@ -48,13 +83,14 @@ from pyngrok import ngrok
 # ------------------------------------------------------------------------------
 # 2. LOAD THE MODEL
 #    Uses the lpw_stable_diffusion_xl custom pipeline (recommended by the model
-#    card) for better handling of long/weighted prompts.
+#    card) for better handling of long/weighted prompts. MODEL_ID (set above)
+#    can point at any SDXL-compatible checkpoint, not just Animagine.
 # ------------------------------------------------------------------------------
-print("Loading Animagine XL 4.0... this takes a minute or two.")
+print(f"Loading {MODEL_ID}... this takes a minute or two.")
 
 pipe = StableDiffusionXLPipeline.from_pretrained(
-    "cagliostrolab/animagine-xl-4.0",
-    torch_dtype=torch.float16,
+    MODEL_ID,
+    dtype=torch.float16,
     use_safetensors=True,
     custom_pipeline="lpw_stable_diffusion_xl",
     add_watermarker=False,
@@ -65,14 +101,44 @@ pipe.to("cuda")
 pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(pipe.scheduler.config)
 
 # Keeps memory usage friendlier on free-tier GPUs (e.g. T4) when generating
-# several images or at higher resolutions.
-pipe.enable_vae_slicing()
+# several images or at higher resolutions. Wrapped in try/except because some
+# diffusers versions don't expose these on the lpw_stable_diffusion_xl custom
+# pipeline class — safe to skip if so, generation still works fine.
+try:
+    pipe.enable_vae_slicing()
+except AttributeError:
+    pass
 try:
     pipe.enable_xformers_memory_efficient_attention()
 except Exception:
     pass  # fine if xformers isn't available — torch's SDPA backend still works
 
 print("Model loaded.")
+
+# ------------------------------------------------------------------------------
+# 2b. LOAD LORA STYLES (optional)
+#    Every entry in LORAS is loaded once, as a named adapter, so a request can
+#    switch between them (or use none) without reloading anything.
+# ------------------------------------------------------------------------------
+LOADED_LORAS = {}  # id -> the LORAS entry, for every adapter that loaded successfully
+
+for lora in LORAS:
+    lora_id = lora.get("id")
+    try:
+        load_kwargs = {"adapter_name": lora_id}
+        if lora.get("weight_name"):
+            load_kwargs["weight_name"] = lora["weight_name"]
+        pipe.load_lora_weights(lora["repo_id"], **load_kwargs)
+        LOADED_LORAS[lora_id] = lora
+        print(f"Loaded LoRA style '{lora.get('name', lora_id)}' ({lora_id}).")
+    except Exception as e:
+        # A bad path/repo in one entry shouldn't take down the whole server —
+        # just skip it and keep going.
+        print(f"Could not load LoRA style '{lora_id}': {e}")
+
+if LOADED_LORAS:
+    # Nothing active by default; a request opts into a style explicitly.
+    pipe.disable_lora()
 
 # Recommended negative prompt per the model card — used as the default unless
 # the frontend sends its own.
@@ -92,7 +158,7 @@ if not API_KEY:
 #    this stops strangers from finding your public ngrok URL and burning your
 #    free GPU quota.
 # ------------------------------------------------------------------------------
-app = FastAPI(title="Animagine XL 4.0 Render Server")
+app = FastAPI(title="SDXL Render Server")
 
 app.add_middleware(
     CORSMiddleware,
@@ -114,6 +180,8 @@ class GenerateRequest(BaseModel):
     guidance_scale: float = Field(default=5.0, ge=1.0, le=12.0)
     steps: int = Field(default=28, ge=10, le=50)
     seed: int = -1  # -1 = random. Otherwise used as the base seed for the batch.
+    style: str | None = None  # LoRA adapter id from GET /styles, or None/"none" for the base model
+    lora_scale: float | None = Field(default=None, ge=0.0, le=2.0)  # None = that style's default_scale
 
 
 def check_api_key(x_api_key: str | None):
@@ -123,13 +191,29 @@ def check_api_key(x_api_key: str | None):
 
 @app.get("/")
 def root():
-    return {"message": "Animagine XL 4.0 render server is running. POST /generate to create images."}
+    return {"message": f"SDXL render server is running ({MODEL_ID}). POST /generate to create images."}
 
 
 @app.get("/health")
 def health(x_api_key: str | None = Header(default=None)):
     check_api_key(x_api_key)
-    return {"status": "ok", "device": str(pipe.device), "model": "cagliostrolab/animagine-xl-4.0"}
+    return {"status": "ok", "device": str(pipe.device), "model": MODEL_ID}
+
+
+@app.get("/styles")
+def styles(x_api_key: str | None = Header(default=None)):
+    """Lists the LoRA styles/finetunes loaded at startup (see LORAS above),
+    so the frontend can build a selector. Empty list if none are configured."""
+    check_api_key(x_api_key)
+    return [
+        {
+            "id": lora_id,
+            "name": lora.get("name", lora_id),
+            "trigger_word": lora.get("trigger_word", ""),
+            "default_scale": lora.get("default_scale", 0.8),
+        }
+        for lora_id, lora in LOADED_LORAS.items()
+    ]
 
 
 @app.post("/generate")
@@ -138,6 +222,23 @@ def generate(req: GenerateRequest, x_api_key: str | None = Header(default=None))
 
     if req.width % 8 != 0 or req.height % 8 != 0:
         raise HTTPException(status_code=400, detail="width and height must be multiples of 8.")
+
+    # --- Resolve the requested style (LoRA), if any --------------------------
+    prompt = req.prompt
+    active_style = req.style if req.style and req.style != "none" else None
+
+    if active_style:
+        lora = LOADED_LORAS.get(active_style)
+        if lora is None:
+            raise HTTPException(status_code=400, detail=f"Unknown style '{active_style}'.")
+        scale = req.lora_scale if req.lora_scale is not None else lora.get("default_scale", 0.8)
+        pipe.set_adapters([active_style], adapter_weights=[scale])
+        trigger = (lora.get("trigger_word") or "").strip()
+        if trigger and trigger.lower() not in prompt.lower():
+            prompt = f"{trigger}, {prompt}"
+    elif LOADED_LORAS:
+        # Some styles are loaded but this request wants the plain base model.
+        pipe.disable_lora()
 
     base_seed = req.seed if req.seed != -1 else random.randint(0, 2_147_483_647)
 
@@ -151,7 +252,7 @@ def generate(req: GenerateRequest, x_api_key: str | None = Header(default=None))
         t0 = time.time()
         try:
             result = pipe(
-                req.prompt,
+                prompt,
                 negative_prompt=req.negative_prompt,
                 width=req.width,
                 height=req.height,
@@ -180,6 +281,9 @@ def generate(req: GenerateRequest, x_api_key: str | None = Header(default=None))
     return {
         "images": images_out,
         "meta": {
+            "model": MODEL_ID,
+            "style": active_style,
+            "prompt": prompt,
             "width": req.width,
             "height": req.height,
             "guidance_scale": req.guidance_scale,
@@ -205,7 +309,7 @@ ngrok.set_auth_token(NGROK_AUTH_TOKEN)
 public_url = ngrok.connect(PORT, "http").public_url
 
 print("\n" + "=" * 70)
-print(" Animagine XL 4.0 render server is ready")
+print(f" SDXL render server is ready ({MODEL_ID})")
 print("=" * 70)
 print(f" Backend URL : {public_url}")
 print(f" API Key     : {API_KEY}")

@@ -253,6 +253,11 @@ textarea:focus, input:focus, select:focus { border-color: var(--accent); }
 .custom-res.hidden { display: none; }
 .custom-res .x { color: var(--text-dim); }
 
+.panel.hidden { display: none; }
+
+.lora-scale { margin-top: 4px; }
+.lora-scale.hidden { display: none; }
+
 .hint { font-size: 0.75rem; color: var(--text-dim); margin: 0; }
 .value-tag {
   font-family: var(--font-mono);

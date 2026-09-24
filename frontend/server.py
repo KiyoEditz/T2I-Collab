@@ -92,6 +92,32 @@ def api_status():
     return jsonify({"ok": True, **resp.json()})
 
 
+@app.route("/api/styles")
+def api_styles():
+    """Proxies GET /styles on the Colab backend — the LoRA styles/finetunes
+    configured there (see LORAS in colab_backend.py), for the frontend's
+    style selector. Empty list if the backend has none configured."""
+    backend_url = (request.args.get("backend_url", "") or "").rstrip("/")
+    api_key = request.args.get("api_key", "")
+
+    if not backend_url:
+        return jsonify({"ok": False, "error": "No backend URL configured."}), 400
+
+    try:
+        resp = requests.get(
+            f"{backend_url}/styles",
+            headers={"X-API-Key": api_key},
+            timeout=15,
+        )
+    except requests.exceptions.RequestException:
+        return jsonify({"ok": False, "error": "Couldn't reach the Colab backend."}), 502
+
+    if resp.status_code != 200:
+        return jsonify({"ok": False, "error": resp.json().get("detail", "Backend rejected the request.")}), resp.status_code
+
+    return jsonify({"ok": True, "styles": resp.json()})
+
+
 @app.route("/api/tags")
 def api_tags():
     """Danbooru tag autocomplete, served entirely from the local SQLite index

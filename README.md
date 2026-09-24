@@ -1,10 +1,13 @@
 # Animagine Studio
 
-A two-part setup that turns a free Google Colab GPU into a personal
-Animagine XL 4.0 render server, with a web app you run on your laptop to
-control it from any device on your wifi.
+A two-part setup that turns a free Google Colab GPU into a personal SDXL
+render server, with a web app you run on your laptop to control it from any
+device on your wifi.
 
-Model: [cagliostrolab/animagine-xl-4.0](https://huggingface.co/cagliostrolab/animagine-xl-4.0)
+Default model: [cagliostrolab/animagine-xl-4.0](https://huggingface.co/cagliostrolab/animagine-xl-4.0)
+— but the backend can be pointed at **any SDXL-compatible checkpoint or
+finetune**, and can offer **LoRA styles** the frontend lets you switch
+between with a dropdown. See [Custom models and styles](#custom-models-and-styles).
 
 ## How it fits together
 
@@ -13,9 +16,10 @@ Model: [cagliostrolab/animagine-xl-4.0](https://huggingface.co/cagliostrolab/ani
         (browser UI)                    (proxy + static files)        (ngrok tunnel)         (GPU, the model)
 ```
 
-- **`colab_backend.py`** runs in Google Colab. It loads Animagine XL 4.0 on
-  the Colab GPU and exposes it as an HTTP API, tunneled to a public URL with
-  ngrok.
+- **`colab_backend.py`** runs in Google Colab. It loads an SDXL checkpoint
+  (Animagine XL 4.0 by default, configurable) on the Colab GPU and exposes it
+  as an HTTP API, tunneled to a public URL with ngrok. It can also preload
+  one or more LoRA styles/finetunes for the frontend to switch between.
 - **`frontend/server.py`** runs on your laptop. It serves the web app to
   every device on your wifi network and forwards generation requests to the
   Colab backend, so the browser never talks to Colab directly.
@@ -37,12 +41,47 @@ Model: [cagliostrolab/animagine-xl-4.0](https://huggingface.co/cagliostrolab/ani
    and paste it into the `NGROK_AUTH_TOKEN` field near the top of the script.
 4. Optionally set your own `API_KEY`; if you leave it blank, one is
    generated for you.
-5. Run the cell. It will download the model, start the server, and keep
+5. Optionally set `MODEL_ID` to a different checkpoint and/or add entries to
+   `LORAS` for switchable styles — see
+   [Custom models and styles](#custom-models-and-styles).
+6. Run the cell. It will download the model, start the server, and keep
    running — that's expected, it *is* the server. When it's ready you'll see
    a box printed with your **Backend URL** and **API Key**. Copy both.
-6. Keep the cell running while you want to render. Closing it, or Colab's
+7. Keep the cell running while you want to render. Closing it, or Colab's
    session timing out, stops the server (you'll need to rerun it and update
    the URL/key in the frontend, since ngrok issues a new URL each time).
+
+## Custom models and styles
+
+Two independent knobs, one on each side:
+
+- **Custom base model** (backend config): open `colab_backend.py` and edit
+  `MODEL_ID` near the top, before running the cell. It accepts any
+  SDXL-compatible checkpoint — a Hugging Face repo id (e.g.
+  `"author/my-finetune"`) or a local/Drive path. This is a backend-only
+  setting; the frontend just displays whatever model the connected backend
+  reports.
+- **Custom finetuning / style selector** (frontend dropdown): also in
+  `colab_backend.py`, add entries to the `LORAS` list — each one points at a
+  LoRA (a Hugging Face repo or local path), plus an optional trigger word and
+  default strength. Every configured LoRA loads once at startup; the
+  frontend then shows a **Style** panel with a dropdown (and a strength
+  slider) to switch between them, or use the plain base model, without
+  restarting the backend. Leave `LORAS` empty to skip this — the Style panel
+  stays hidden.
+
+  ```python
+  LORAS = [
+      {
+          "id": "my_style",
+          "name": "My Custom Style",
+          "repo_id": "username/my-lora-repo",
+          "weight_name": "my_style.safetensors",  # omit if the repo has only one file
+          "trigger_word": "mystyle",               # auto-added to the prompt when selected
+          "default_scale": 0.8,                    # 0.0-2.0, overridable from the slider
+      },
+  ]
+  ```
 
 ## 2. Build the local tag autofill index
 
@@ -89,6 +128,11 @@ The terminal prints two URLs:
 
 ## 5. Generate images
 
+- **Style**: if the connected backend has any `LORAS` configured, a Style
+  panel appears with a dropdown ("None (base model)" plus each configured
+  style) and a strength slider. Switching styles takes effect on your next
+  Generate click, no backend restart needed. Hidden entirely if the backend
+  has no styles configured.
 - **Tags**: type danbooru-style tags separated by commas. After 2+
   characters, a dropdown predicts matching tags from your local index —
   matched anywhere in the name (not just the start, e.g. "ela" finds

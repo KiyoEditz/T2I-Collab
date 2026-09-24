@@ -29,6 +29,12 @@ const negativeInput = el("negativeInput");
 const tagSuggestions = el("tagSuggestions");
 const quickTagsWrap = el("quickTags");
 
+const stylePanel = el("stylePanel");
+const stylePreset = el("stylePreset");
+const loraScaleWrap = el("loraScaleWrap");
+const loraScale = el("loraScale");
+const loraScaleValue = el("loraScaleValue");
+
 const numImagesInput = el("numImages");
 const resolutionPreset = el("resolutionPreset");
 const customRes = el("customRes");
@@ -74,6 +80,9 @@ const filmstrip = el("filmstrip");
 let galleryImages = []; // newest first: {id, src, seed, width, height, prompt}
 let lightboxIndex = -1;
 
+let availableStyles = []; // [{id, name, trigger_word, default_scale}, ...] from GET /api/styles
+let pendingStyleId = "none"; // style to restore from saved state, once the list is populated
+
 // ==========================================================================
 // State persistence (settings only — generated images are not persisted)
 // ==========================================================================
@@ -105,6 +114,10 @@ function initFromState() {
   seedInput.value = s.seed ?? -1;
   backendUrlInput.value = s.backendUrl ?? "";
   apiKeyInput.value = s.apiKey ?? "";
+
+  pendingStyleId = s.style ?? "none";
+  loraScale.value = s.loraScale ?? 0.8;
+  loraScaleValue.textContent = Number(loraScale.value).toFixed(2);
 
   onResolutionChange();
   renderQuickTags();
@@ -373,6 +386,7 @@ async function checkConnection(backendUrl, apiKey) {
     const data = await resp.json();
     if (data.ok) {
       setStatusPill("ok", "Connected");
+      fetchStyles(backendUrl, apiKey);
       return true;
     }
     setStatusPill("error", "Connection failed");
@@ -382,6 +396,52 @@ async function checkConnection(backendUrl, apiKey) {
     return false;
   }
 }
+
+// ==========================================================================
+// Style / LoRA selector — populated from whatever the connected backend has
+// configured (see LORAS in colab_backend.py). Hidden entirely if the backend
+// has no styles loaded.
+// ==========================================================================
+async function fetchStyles(backendUrl, apiKey) {
+  try {
+    const resp = await fetch(`/api/styles?backend_url=${encodeURIComponent(backendUrl)}&api_key=${encodeURIComponent(apiKey)}`);
+    const data = await resp.json();
+    availableStyles = data.ok && Array.isArray(data.styles) ? data.styles : [];
+  } catch {
+    availableStyles = [];
+  }
+  renderStylePreset();
+}
+
+function renderStylePreset() {
+  stylePanel.classList.toggle("hidden", availableStyles.length === 0);
+  if (availableStyles.length === 0) return;
+
+  stylePreset.innerHTML = '<option value="none">None (base model)</option>';
+  availableStyles.forEach((style) => {
+    const opt = document.createElement("option");
+    opt.value = style.id;
+    opt.textContent = style.name;
+    stylePreset.appendChild(opt);
+  });
+
+  // Restore the previously selected style, if it's still offered.
+  const hasPending = availableStyles.some((s) => s.id === pendingStyleId);
+  stylePreset.value = hasPending ? pendingStyleId : "none";
+  onStyleChange(/* keepSavedScale */ true);
+}
+
+function onStyleChange(keepSavedScale) {
+  const selected = availableStyles.find((s) => s.id === stylePreset.value);
+  loraScaleWrap.classList.toggle("hidden", !selected);
+  if (selected && !keepSavedScale) {
+    loraScale.value = selected.default_scale ?? 0.8;
+    loraScaleValue.textContent = Number(loraScale.value).toFixed(2);
+  }
+}
+
+stylePreset.addEventListener("change", () => onStyleChange(false));
+loraScale.addEventListener("input", () => (loraScaleValue.textContent = Number(loraScale.value).toFixed(2)));
 
 function setStatusPill(state, label) {
   connectionStatus.classList.remove("status-unknown", "status-ok", "status-error");
@@ -411,6 +471,8 @@ function readSettings() {
     cfg: Number(cfgScale.value),
     steps: Number(stepsRange.value),
     seed: Number(seedInput.value),
+    style: stylePreset.value || "none",
+    loraScale: Number(loraScale.value),
     backendUrl: (loadState().backendUrl || "").trim(),
     apiKey: (loadState().apiKey || "").trim(),
   };
@@ -453,6 +515,8 @@ generateBtn.addEventListener("click", async () => {
     cfg: s.cfg,
     steps: s.steps,
     seed: s.seed,
+    style: s.style,
+    loraScale: s.loraScale,
   });
 
   if (!s.prompt) {
@@ -481,12 +545,19 @@ generateBtn.addEventListener("click", async () => {
         guidance_scale: s.cfg,
         steps: s.steps,
         seed: s.seed,
+        style: s.style && s.style !== "none" ? s.style : null,
+        lora_scale: s.style && s.style !== "none" ? s.loraScale : null,
       }),
     });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || data.detail || "Generation failed.");
 
-    addImagesToGallery(data.images, { prompt: s.prompt, width: data.meta.width, height: data.meta.height });
+    addImagesToGallery(data.images, {
+      prompt: data.meta.prompt || s.prompt,
+      width: data.meta.width,
+      height: data.meta.height,
+      style: data.meta.style,
+    });
     setStatusPill("ok", "Connected");
   } catch (err) {
     showError(err.message);
@@ -506,6 +577,7 @@ function addImagesToGallery(images, meta) {
     width: meta.width,
     height: meta.height,
     prompt: meta.prompt,
+    style: meta.style,
   }));
   galleryImages = [...newItems, ...galleryImages];
   renderGallery();
@@ -575,7 +647,8 @@ function renderLightbox() {
   const item = galleryImages[lightboxIndex];
   if (!item) return;
   lightboxImage.src = item.src;
-  lightboxMeta.textContent = `seed ${item.seed} · ${item.width}×${item.height} · ${item.prompt}`;
+  const styleTag = item.style ? ` · style: ${item.style}` : "";
+  lightboxMeta.textContent = `seed ${item.seed} · ${item.width}×${item.height}${styleTag} · ${item.prompt}`;
 
   filmstrip.innerHTML = "";
   galleryImages.forEach((img, i) => {
